@@ -222,7 +222,7 @@ namespace Microsoft.EntityFrameworkCore.InMemory.FunctionalTests
 
             protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
                 => optionsBuilder
-                    .UseInMemoryDatabase()
+                    .UseTransientInMemoryDatabase()
                     .UseInternalServiceProvider(_serviceProvider);
         }
 
