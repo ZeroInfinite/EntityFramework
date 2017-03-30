@@ -58,9 +58,9 @@ namespace Microsoft.EntityFrameworkCore.Query
         private bool _requiresClientProjection;
         private bool _requiresClientOrderBy;
         private bool _requiresClientResultOperator;
-        private bool _requiresClientSingleColumnResultOperator;
 
         private Dictionary<IncludeSpecification, List<int>> _navigationIndexMap = new Dictionary<IncludeSpecification, List<int>>();
+        private readonly List<GroupJoinClause> _unflattenedGroupJoinClauses = new List<GroupJoinClause>();
 
         /// <summary>
         ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
@@ -169,21 +169,8 @@ namespace Microsoft.EntityFrameworkCore.Query
         /// </value>
         public virtual bool RequiresClientResultOperator
         {
-            get { return _requiresClientResultOperator || RequiresClientEval; }
+            get { return _unflattenedGroupJoinClauses.Any() || _requiresClientResultOperator || RequiresClientEval; }
             set { _requiresClientResultOperator = value; }
-        }
-
-        /// <summary>
-        ///     Gets or sets a value indicating whether the query requires client evaluation for result operators potentially apply to a subset of
-        ///     columns rather than entire row.
-        /// </summary>
-        /// <value>
-        ///     true if the query requires client single column result operator, false if not.
-        /// </value>
-        internal virtual bool RequiresClientSingleColumnResultOperator
-        {
-            get { return _requiresClientSingleColumnResultOperator || _requiresClientResultOperator || RequiresClientEval; }
-            set { _requiresClientSingleColumnResultOperator = value; }
         }
 
         /// <summary>
@@ -195,25 +182,20 @@ namespace Microsoft.EntityFrameworkCore.Query
         ///     true if the query model visitor can bind to its parent's properties, false if not.
         /// </value>
         public virtual bool CanBindToParentQueryModel { get; protected set; }
-        
+
         /// <summary>
         ///     Gets a value indicating whether query model visitor's resulting expression
         ///     can be lifted into the parent query. Liftable queries contain a single SelectExpression.
         /// </summary>
         public virtual bool IsLiftable
-        {
-            get
-            {
-                return Queries.Count == 1
-                    && !RequiresClientEval
-                    && !RequiresClientSelectMany
-                    && !RequiresClientJoin
-                    && !RequiresClientFilter
-                    && !RequiresClientProjection
-                    && !RequiresClientOrderBy
-                    && !RequiresClientResultOperator;
-            }
-        }
+            => Queries.Count == 1
+               && !RequiresClientEval
+               && !RequiresClientSelectMany
+               && !RequiresClientJoin
+               && !RequiresClientFilter
+               && !RequiresClientProjection
+               && !RequiresClientOrderBy
+               && !RequiresClientResultOperator;
 
         /// <summary>
         ///     Context for the query compilation.
@@ -272,11 +254,7 @@ namespace Microsoft.EntityFrameworkCore.Query
         {
             Check.NotNull(querySource, nameof(querySource));
 
-            querySource
-                = (querySource as GroupJoinClause)?.JoinClause ?? querySource;
-
-            SelectExpression selectExpression;
-            return QueriesBySource.TryGetValue(querySource, out selectExpression)
+            return QueriesBySource.TryGetValue(querySource, out SelectExpression selectExpression)
                 ? selectExpression
                 : QueriesBySource.Values.LastOrDefault(se => se.HandlesQuerySource(querySource));
         }
@@ -401,8 +379,7 @@ namespace Microsoft.EntityFrameworkCore.Query
             Check.NotNull(queryModel, nameof(queryModel));
 
             Expression expression = null;
-            var subQueryExpression = mainFromClause.FromExpression as SubQueryExpression;
-            if (subQueryExpression != null)
+            if (mainFromClause.FromExpression is SubQueryExpression subQueryExpression)
             {
                 expression = LiftSubQuery(mainFromClause, subQueryExpression);
             }
@@ -473,8 +450,7 @@ namespace Microsoft.EntityFrameworkCore.Query
             Check.NotNull(queryModel, nameof(queryModel));
 
             Expression expression = null;
-            var subQueryExpression = additionalFromClause.FromExpression as SubQueryExpression;
-            if (subQueryExpression != null)
+            if (additionalFromClause.FromExpression is SubQueryExpression subQueryExpression)
             {
                 expression = LiftSubQuery(additionalFromClause, subQueryExpression);
             }
@@ -528,8 +504,7 @@ namespace Microsoft.EntityFrameworkCore.Query
             Check.NotNull(queryModel, nameof(queryModel));
 
             Expression expression = null;
-            var subQueryExpression = joinClause.InnerSequence as SubQueryExpression;
-            if (subQueryExpression != null)
+            if (joinClause.InnerSequence is SubQueryExpression subQueryExpression)
             {
                 expression = LiftSubQuery(joinClause, subQueryExpression);
             }
@@ -559,6 +534,8 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             base.VisitGroupJoinClause(groupJoinClause, queryModel, index);
 
+            _unflattenedGroupJoinClauses.Add(groupJoinClause);
+
             if (!TryFlattenGroupJoin(
                 groupJoinClause,
                 queryModel,
@@ -574,12 +551,6 @@ namespace Microsoft.EntityFrameworkCore.Query
             {
                 WarnClientEval(groupJoinClause.JoinClause);
             }
-
-            // Workaround until #6647 is addressed - GroupJoin requires materialization of entire entity which results in all columns of that entity being projected
-            // this in turn causes result operators to be applied on all of those columns, even if the query specifies a subset of columns to perform the operation on
-            // this could lead to incorrect results (e.g. for Distinct)
-            // This however is safe to do for some operators, e.g. FirstOrDefault, Count(), Take() because their result is the same whether they are applied on single column or entire row
-            RequiresClientSingleColumnResultOperator = true;
         }
 
         private Dictionary<IQuerySource, Expression> SnapshotQuerySourceMapping(QueryModel queryModel)
@@ -602,10 +573,8 @@ namespace Microsoft.EntityFrameworkCore.Query
                         = QueryCompilationContext.QuerySourceMapping
                             .GetExpression(querySource);
 
-                    var groupJoinClause = querySource as GroupJoinClause;
 
-                    if (groupJoinClause != null
-                        && QueryCompilationContext.QuerySourceMapping
+                    if (querySource is GroupJoinClause groupJoinClause && QueryCompilationContext.QuerySourceMapping
                             .ContainsMapping(groupJoinClause.JoinClause))
                     {
                         previousMapping.Add(
@@ -630,37 +599,27 @@ namespace Microsoft.EntityFrameworkCore.Query
             private IForeignKey _matchingCandidate;
             private List<IProperty> _matchingCandidateProperties;
 
-            public override Expression Visit(Expression expression)
-            {
-                var binaryExpression = expression as BinaryExpression;
-
-                if (binaryExpression != null)
-                {
-                    return VisitBinary(binaryExpression);
-                }
-
-                return expression;
-            }
-
-            protected override Expression VisitBinary(BinaryExpression node)
+            protected override Expression VisitBinary(BinaryExpression binaryExpression)
             {
                 if (DependentToPrincipalFound)
                 {
-                    return node;
+                    return binaryExpression;
                 }
 
-                if (node.NodeType == ExpressionType.Equal)
+                if (binaryExpression.NodeType == ExpressionType.Equal)
                 {
-                    var leftProperty = node.Left.RemoveConvert().TryGetColumnExpression()?.Property;
-                    var rightProperty = node.Right.RemoveConvert().TryGetColumnExpression()?.Property;
+                    var leftExpression = binaryExpression.Left.RemoveConvert();
+                    var rightExpression = binaryExpression.Right.RemoveConvert();
+                    var leftProperty = (((leftExpression as NullableExpression)?.Operand ?? leftExpression) as ColumnExpression)?.Property;
+                    var rightProperty = (((rightExpression as NullableExpression)?.Operand ?? rightExpression) as ColumnExpression)?.Property;
                     if (leftProperty != null
                         && rightProperty != null
                         && leftProperty.IsForeignKey()
                         && rightProperty.IsKey())
                     {
                         var keyDeclaringEntityType = rightProperty.GetContainingKeys().First().DeclaringEntityType;
-                        var matchingForeignKeys = leftProperty.GetContainingForeignKeys().Where(k => k.PrincipalKey.DeclaringEntityType == keyDeclaringEntityType);
-                        if (matchingForeignKeys.Count() == 1)
+                        var matchingForeignKeys = leftProperty.GetContainingForeignKeys().Where(k => k.PrincipalKey.DeclaringEntityType == keyDeclaringEntityType).ToList();
+                        if (matchingForeignKeys.Count == 1)
                         {
                             var matchingKey = matchingForeignKeys.Single();
                             if (rightProperty.GetContainingKeys().Contains(matchingKey.PrincipalKey))
@@ -679,23 +638,20 @@ namespace Microsoft.EntityFrameworkCore.Query
                                 if (_matchingCandidate.Properties.All(p => _matchingCandidateProperties.Contains(p)))
                                 {
                                     DependentToPrincipalFound = true;
-                                    return node;
+                                    return binaryExpression;
                                 }
                             }
                         }
                     }
 
-                    _expressions.Add(node.Left.RemoveConvert());
+                    _expressions.Add(leftExpression);
 
-                    return node;
+                    return binaryExpression;
                 }
 
-                if (node.NodeType == ExpressionType.AndAlso)
-                {
-                    return base.VisitBinary(node);
-                }
-
-                return node;
+                return binaryExpression.NodeType == ExpressionType.AndAlso
+                    ? base.VisitBinary(binaryExpression)
+                    : binaryExpression;
             }
         }
 
@@ -731,8 +687,7 @@ namespace Microsoft.EntityFrameworkCore.Query
             Check.NotNull(queryModel, nameof(queryModel));
 
             Expression expression = null;
-            var subQueryExpression = groupJoinClause.JoinClause.InnerSequence as SubQueryExpression;
-            if (subQueryExpression != null)
+            if (groupJoinClause.JoinClause.InnerSequence is SubQueryExpression subQueryExpression)
             {
                 expression = LiftSubQuery(groupJoinClause.JoinClause, subQueryExpression);
             }
@@ -813,9 +768,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             protected override Expression VisitConstant(ConstantExpression constantExpression)
             {
-                var shaper = constantExpression.Value as Shaper;
-
-                if (shaper != null)
+                if (constantExpression.Value is Shaper shaper)
                 {
                     foreach (var queryAnnotation
                         in _relationalQueryCompilationContext.QueryAnnotations
@@ -909,7 +862,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                         _conditionalRemovingExpressionVisitorFactory
                             .Create()
                             .Visit(sqlPredicateExpression);
-                    
+
                     selectExpression.AddToPredicate(sqlPredicateExpression);
                 }
                 else
@@ -1015,8 +968,7 @@ namespace Microsoft.EntityFrameworkCore.Query
         /// </summary>
         /// <param name="selectClause"> The node being visited. </param>
         /// <param name="queryModel"> The query. </param>
-        public override void VisitSelectClause(
-            [NotNull] SelectClause selectClause, [NotNull] QueryModel queryModel)
+        public override void VisitSelectClause(SelectClause selectClause, QueryModel queryModel)
         {
             Check.NotNull(selectClause, nameof(selectClause));
             Check.NotNull(queryModel, nameof(queryModel));
@@ -1048,7 +1000,14 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                         if (!qsreFinder.FoundAny)
                         {
-                            var newShaper = ProjectionShaper.Create(oldShaper, materializer);
+                            Shaper newShaper = null;
+
+                            if (selectClause.Selector is QuerySourceReferenceExpression querySourceReferenceExpression)
+                            {
+                                newShaper = oldShaper.Unwrap(querySourceReferenceExpression.ReferencedQuerySource);
+                            }
+
+                            newShaper = newShaper ?? ProjectionShaper.Create(oldShaper, materializer);
 
                             Expression =
                                 Expression.Call(
@@ -1097,9 +1056,11 @@ namespace Microsoft.EntityFrameworkCore.Query
         /// </summary>
         /// <param name="queryModel"> The query. </param>
         /// <param name="includeResultOperators">TODO: This parameter is to be removed.</param>
+        /// <param name="asyncQuery"></param>
         protected override void OptimizeQueryModel(
             QueryModel queryModel,
-            ICollection<IncludeResultOperator> includeResultOperators)
+            ICollection<IncludeResultOperator> includeResultOperators,
+            bool asyncQuery)
         {
             Check.NotNull(queryModel, nameof(queryModel));
             Check.NotNull(includeResultOperators, nameof(includeResultOperators));
@@ -1109,7 +1070,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             queryModel.TransformExpressions(typeIsExpressionTranslatingVisitor.Visit);
 
-            base.OptimizeQueryModel(queryModel, includeResultOperators);
+            base.OptimizeQueryModel(queryModel, includeResultOperators, asyncQuery);
         }
 
         /// <summary>
@@ -1189,7 +1150,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             var linqMethods = QueryCompilationContext.LinqOperatorProvider;
 
-            if (methodCallExpression.Method.MethodIsClosedFormOf(linqMethods.DefaultIfEmpty) 
+            if (methodCallExpression.Method.MethodIsClosedFormOf(linqMethods.DefaultIfEmpty)
                 || methodCallExpression.Method.MethodIsClosedFormOf(linqMethods.DefaultIfEmptyArg))
             {
                 methodCallExpression = methodCallExpression.Arguments[0] as MethodCallExpression;
@@ -1202,7 +1163,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             var queryMethods = QueryCompilationContext.QueryMethodProvider;
 
-            if (methodCallExpression.Method.MethodIsClosedFormOf(queryMethods.ShapedQueryMethod) 
+            if (methodCallExpression.Method.MethodIsClosedFormOf(queryMethods.ShapedQueryMethod)
                 || methodCallExpression.Method.MethodIsClosedFormOf(queryMethods.DefaultIfEmptyShapedQueryMethod))
             {
                 return true;
@@ -1230,8 +1191,8 @@ namespace Microsoft.EntityFrameworkCore.Query
         }
 
         private bool TryFlattenSelectMany(
-            AdditionalFromClause fromClause, 
-            QueryModel queryModel, 
+            AdditionalFromClause fromClause,
+            QueryModel queryModel,
             int index,
             int previousProjectionCount)
         {
@@ -1273,7 +1234,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             if (selectManyMethodCallExpression == null
                 || !selectManyMethodCallExpression.Method.MethodIsClosedFormOf(LinqOperatorProvider.SelectMany)
-                || !IsShapedQueryExpression(outerShapedQuery) 
+                || !IsShapedQueryExpression(outerShapedQuery)
                 || !IsShapedQueryExpression(innerShapedQuery))
             {
                 return false;
@@ -1283,8 +1244,6 @@ namespace Microsoft.EntityFrameworkCore.Query
             {
                 outerSelectExpression.RemoveRangeFromProjection(previousProjectionCount);
             }
-
-            var outerProjectionCount = outerSelectExpression.Projection.Count;
 
             var joinExpression
                 = correlated
@@ -1314,6 +1273,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             Expression
                 = Expression.Call(
+                    // ReSharper disable once PossibleNullReferenceException
                     outerShapedQuery.Method
                         .GetGenericMethodDefinition()
                         .MakeGenericMethod(materializerLambda.ReturnType),
@@ -1325,9 +1285,9 @@ namespace Microsoft.EntityFrameworkCore.Query
         }
 
         private bool TryFlattenJoin(
-            JoinClause joinClause, 
-            QueryModel queryModel, 
-            int index, 
+            JoinClause joinClause,
+            QueryModel queryModel,
+            int index,
             int previousProjectionCount)
         {
             if (RequiresClientJoin || RequiresClientSelectMany)
@@ -1345,7 +1305,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             if (joinMethodCallExpression == null
                 || !joinMethodCallExpression.Method.MethodIsClosedFormOf(LinqOperatorProvider.Join)
-                || !IsShapedQueryExpression(outerShapedQuery) 
+                || !IsShapedQueryExpression(outerShapedQuery)
                 || !IsShapedQueryExpression(innerShapedQuery))
             {
                 return false;
@@ -1360,7 +1320,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                 return false;
             }
 
-            var sqlTranslatingExpressionVisitor
+           var sqlTranslatingExpressionVisitor
                 = _sqlTranslatingExpressionVisitorFactory.Create(this);
 
             var predicate
@@ -1405,6 +1365,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             Expression
                 = Expression.Call(
+                    // ReSharper disable once PossibleNullReferenceException
                     outerShapedQuery.Method
                         .GetGenericMethodDefinition()
                         .MakeGenericMethod(materializerLambda.ReturnType),
@@ -1471,11 +1432,11 @@ namespace Microsoft.EntityFrameworkCore.Query
             {
                 var subSelectExpression = innerSelectExpression.PushDownSubquery();
                 innerSelectExpression.ExplodeStarProjection();
-                subSelectExpression.ClearProjection();
                 subSelectExpression.IsProjectStar = true;
+                subSelectExpression.ClearProjection();
                 subSelectExpression.QuerySource = joinClause;
 
-                predicate 
+                predicate
                     = sqlTranslatingExpressionVisitor.Visit(
                         Expression.Equal(joinClause.OuterKeySelector, joinClause.InnerKeySelector));
             }
@@ -1484,7 +1445,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             outerSelectExpression.RemoveRangeFromProjection(previousProjectionCount);
 
-            var projection
+            var projections
                 = QueryCompilationContext.QuerySourceRequiresMaterialization(joinClause)
                     ? innerSelectExpression.Projection
                     : Enumerable.Empty<Expression>();
@@ -1492,17 +1453,17 @@ namespace Microsoft.EntityFrameworkCore.Query
             var joinExpression
                 = outerSelectExpression.AddLeftOuterJoin(
                     innerSelectExpression.Tables.Single(),
-                    projection);
+                    projections);
 
             joinExpression.Predicate = predicate;
             joinExpression.QuerySource = joinClause;
 
             if (TryFlattenGroupJoinDefaultIfEmpty(
-                groupJoinClause, 
-                queryModel, 
-                index, 
-                previousProjectionCount, 
-                previousParameter, 
+                groupJoinClause,
+                queryModel,
+                index,
+                previousProjectionCount,
+                previousParameter,
                 previousMapping))
             {
                 return true;
@@ -1519,7 +1480,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                         new Ordering(expression, OrderingDirection.Asc));
                 }
             }
-            
+
             var outerShaper = ExtractShaper(outerShapedQuery, 0);
             var innerShaper = ExtractShaper(innerShapedQuery, previousProjectionCount);
 
@@ -1537,6 +1498,7 @@ namespace Microsoft.EntityFrameworkCore.Query
             var newShapedQueryMethod
                 = Expression.Call(
                     queryMethodProvider.QueryMethod,
+                    // ReSharper disable once PossibleNullReferenceException
                     outerShapedQuery.Arguments[0],
                     outerShapedQuery.Arguments[1],
                     Expression.Default(typeof(int?)));
@@ -1563,7 +1525,7 @@ namespace Microsoft.EntityFrameworkCore.Query
         }
 
         private bool TryFlattenGroupJoinDefaultIfEmpty(
-            GroupJoinClause groupJoinClause,
+            [NotNull] GroupJoinClause groupJoinClause,
             QueryModel queryModel,
             int index,
             int previousProjectionCount,
@@ -1597,6 +1559,8 @@ namespace Microsoft.EntityFrameworkCore.Query
             queryModel.BodyClauses.Remove(groupJoinClause);
             queryModel.BodyClauses.Remove(additionalFromClause);
 
+            _unflattenedGroupJoinClauses.Remove(groupJoinClause);
+
             var querySourceMapping = new QuerySourceMapping();
 
             querySourceMapping.AddMapping(
@@ -1614,13 +1578,13 @@ namespace Microsoft.EntityFrameworkCore.Query
                 .Where(a => a.QuerySource == additionalFromClause))
             {
                 annotation.QuerySource = joinClause;
-                annotation.PathFromQuerySource 
+                annotation.PathFromQuerySource
                     = ReferenceReplacingExpressionVisitor.ReplaceClauseReferences(
                         annotation.PathFromQuerySource,
                         querySourceMapping,
                         throwOnUnmappedReferences: false);
             }
-            
+
             var groupJoinMethodCallExpression = (MethodCallExpression)Expression;
 
             var outerShapedQuery = (MethodCallExpression)groupJoinMethodCallExpression.Arguments[0];
@@ -1644,9 +1608,9 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             AddOrUpdateMapping(joinClause, innerItemParameter);
 
-            var transparentIdentifierType 
+            var transparentIdentifierType
                 = CreateTransparentIdentifierType(
-                    previousParameter.Type, 
+                    previousParameter.Type,
                     innerShaper.Type);
 
             var materializer
@@ -1702,7 +1666,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                         Debug.Assert(projectionIndex > -1);
 
-                        return BindReadValueMethod(memberExpression.Type, expression, projectionIndex);
+                        return BindReadValueMethod(memberExpression.Type, expression, projectionIndex, property);
                     },
                 bindSubQueries: true);
         }
@@ -1729,7 +1693,7 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                                Debug.Assert(projectionIndex > -1);
 
-                               return BindReadValueMethod(methodCallExpression.Type, expression, projectionIndex);
+                               return BindReadValueMethod(methodCallExpression.Type, expression, projectionIndex, property);
                            },
                        bindSubQueries: true)
                    ?? ParentQueryModelVisitor?
@@ -1823,16 +1787,12 @@ namespace Microsoft.EntityFrameworkCore.Query
             return base.BindMethodCallExpression<Expression>(methodCallExpression, null,
                 (property, qs) =>
                     {
-                        var parameterExpression = methodCallExpression.Arguments[0] as ParameterExpression;
-
-                        if (parameterExpression != null)
+                        if (methodCallExpression.Arguments[0] is ParameterExpression parameterExpression)
                         {
                             return new PropertyParameterExpression(parameterExpression.Name, property);
                         }
 
-                        var constantExpression = methodCallExpression.Arguments[0] as ConstantExpression;
-
-                        if (constantExpression != null)
+                        if (methodCallExpression.Arguments[0] is ConstantExpression constantExpression)
                         {
                             return Expression.Constant(
                                 property.GetGetter().GetClrValue(constantExpression.Value),
@@ -1867,8 +1827,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                 if (selectExpression == null
                     && bindSubQueries)
                 {
-                    RelationalQueryModelVisitor subQueryModelVisitor;
-                    if (_subQueryModelVisitorsBySource.TryGetValue(querySource, out subQueryModelVisitor))
+                    if (_subQueryModelVisitorsBySource.TryGetValue(querySource, out RelationalQueryModelVisitor subQueryModelVisitor))
                     {
                         if (!subQueryModelVisitor.RequiresClientProjection)
                         {
@@ -1876,7 +1835,6 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                             selectExpression?
                                 .AddToProjection(
-                                    _relationalAnnotationProvider.For(property).ColumnName,
                                     property,
                                     querySource);
                         }
@@ -1892,7 +1850,6 @@ namespace Microsoft.EntityFrameworkCore.Query
                     = ParentQueryModelVisitor?.TryGetQuery(querySource);
 
                 selectExpression?.AddToProjection(
-                    _relationalAnnotationProvider.For(property).ColumnName,
                     property,
                     querySource);
             }
@@ -1933,7 +1890,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                     }
 
                     QueryCompilationContext.ParentQueryReferenceParameters.Add(parameterName);
-                    
+
                     var querySourceReference = new QuerySourceReferenceExpression(querySource);
                     var propertyExpression = isMemberExpression
                         ? Expression.Property(querySourceReference, property.PropertyInfo)
@@ -1946,9 +1903,9 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                     _injectedParameters[parameterName] = propertyExpression;
 
-                    Expression 
+                    Expression
                         = CreateInjectParametersExpression(
-                            Expression, 
+                            Expression,
                             new Dictionary<string, Expression> { [parameterName] = propertyExpression });
 
                     return Expression.Parameter(
@@ -1977,7 +1934,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                 expression = methodCallExpression.Arguments[1];
             }
 
-            parameterNameExpressions.AddRange(parameters.Keys.Select(k => Expression.Constant(k)));
+            parameterNameExpressions.AddRange(parameters.Keys.Select(Expression.Constant));
             parameterValueExpressions.AddRange(parameters.Values);
 
             var elementType = expression.Type.GetTypeInfo().GenericTypeArguments.Single();

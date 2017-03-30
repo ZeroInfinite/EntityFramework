@@ -28,29 +28,13 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
             [NotNull] string name,
             [NotNull] IProperty property,
             [NotNull] TableExpressionBase tableExpression)
-            : this(name, Check.NotNull(property, nameof(property)).ClrType, tableExpression)
-        {
-            _property = property;
-            IsNullable = _property.IsNullable;
-        }
-
-        /// <summary>
-        ///     Creates a new instance of a ColumnExpression.
-        /// </summary>
-        /// <param name="name"> The column name. </param>
-        /// <param name="type"> The column type. </param>
-        /// <param name="tableExpression"> The target table expression. </param>
-        public ColumnExpression(
-            [NotNull] string name,
-            [NotNull] Type type,
-            [NotNull] TableExpressionBase tableExpression)
         {
             Check.NotEmpty(name, nameof(name));
-            Check.NotNull(type, nameof(type));
+            Check.NotNull(property, nameof(property));
             Check.NotNull(tableExpression, nameof(tableExpression));
 
             Name = name;
-            Type = type;
+            _property = property;
             _tableExpression = tableExpression;
         }
 
@@ -58,11 +42,6 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         ///     The target table.
         /// </summary>
         public virtual TableExpressionBase Table => _tableExpression;
-
-        /// <summary>
-        ///     The target table alias.
-        /// </summary>
-        public virtual string TableAlias => _tableExpression.Alias;
 
 #pragma warning disable 108
 
@@ -90,12 +69,7 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         ///     Gets the static type of the expression that this <see cref="Expression" /> represents. (Inherited from <see cref="Expression" />.)
         /// </summary>
         /// <returns> The <see cref="Type" /> that represents the static type of the expression. </returns>
-        public override Type Type { get; }
-
-        /// <summary>
-        ///     Gets a value indicating whether this column expression can contain null.
-        /// </summary>
-        public virtual bool IsNullable { get; set; }
+        public override Type Type => _property.ClrType;
 
         /// <summary>
         ///     Dispatches to the specific visit method for this node type.
@@ -126,12 +100,6 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         /// </remarks>
         protected override Expression VisitChildren(ExpressionVisitor visitor) => this;
 
-        private bool Equals([NotNull] ColumnExpression other)
-            => ((_property == null && other._property == null && Name == other.Name)
-                || (_property != null && _property.Equals(other._property)))
-               && Type == other.Type
-               && _tableExpression.Equals(other._tableExpression);
-
         /// <summary>
         ///     Tests if this object is considered equal to another.
         /// </summary>
@@ -139,7 +107,7 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         /// <returns>
         ///     true if the objects are considered equal, false if they are not.
         /// </returns>
-        public override bool Equals([CanBeNull] object obj)
+        public override bool Equals(object obj)
         {
             if (ReferenceEquals(null, obj))
             {
@@ -151,9 +119,15 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
                 return true;
             }
 
-            return (obj.GetType() == GetType())
+            return obj.GetType() == GetType()
                    && Equals((ColumnExpression)obj);
         }
+
+        private bool Equals([NotNull] ColumnExpression other)
+            // Compare on names only because multiple properties can map to same column in inheritance scenario
+            => string.Equals(Name, other.Name)
+               && Type == other.Type
+               && Equals(Table, other.Table);
 
         /// <summary>
         ///     Returns a hash code for this object.
@@ -165,8 +139,11 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         {
             unchecked
             {
-                return (_property.GetHashCode() * 397)
-                       ^ _tableExpression.GetHashCode();
+                var hashCode = Type.GetHashCode();
+                hashCode = (hashCode * 397) ^ _tableExpression.GetHashCode();
+                hashCode = (hashCode * 397) ^ Name.GetHashCode();
+
+                return hashCode;
             }
         }
 

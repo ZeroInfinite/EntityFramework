@@ -87,9 +87,7 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors.Internal
             var discriminatorProperty = _relationalAnnotationProvider.For(concreteEntityTypes[0]).DiscriminatorProperty;
 
             var discriminatorColumn
-                = selectExpression.Projection
-                    .OfType<AliasExpression>()
-                    .Last(c => c.TryGetColumnExpression()?.Property == discriminatorProperty);
+                = selectExpression.Projection.Last(c => (c as ColumnExpression)?.Property == discriminatorProperty);
 
             var firstDiscriminatorValue
                 = Expression.Constant(
@@ -121,7 +119,8 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors.Internal
                             .CreateReadValueExpression(
                                 valueBufferParameter,
                                 discriminatorProperty.ClrType,
-                                discriminatorProperty.GetIndex())),
+                                discriminatorProperty.GetIndex(),
+                                discriminatorProperty)),
                     Expression.IfThenElse(
                         Expression.Equal(discriminatorValueVariable, firstDiscriminatorValue),
                         Expression.Return(returnLabelTarget, materializer),

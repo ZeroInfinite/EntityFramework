@@ -260,12 +260,14 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
                 Assert.Equal(2, result.Count);
 
                 var marcusReports = result.Where(e => e.Nickname == "Marcus").Single().Reports.ToList();
+
                 Assert.Equal(3, marcusReports.Count);
                 Assert.Contains("Baird", marcusReports.Select(g => g.Nickname));
                 Assert.Contains("Cole Train", marcusReports.Select(g => g.Nickname));
                 Assert.Contains("Dom", marcusReports.Select(g => g.Nickname));
 
                 var bairdReports = result.Where(e => e.Nickname == "Baird").Single().Reports.ToList();
+
                 Assert.Equal(1, bairdReports.Count);
                 Assert.Contains("Paduk", bairdReports.Select(g => g.Nickname));
             }
@@ -1569,7 +1571,13 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
 
                 var result = query.ToList();
 
-                Assert.True(result.Count(r => r.Weapons.Count > 0) >= 4);
+                Assert.Equal("Marcus", result[0].Nickname);
+                Assert.Equal(2, result[0].Weapons.Count);
+                Assert.Equal("Marcus", result[1].Nickname);
+                Assert.Equal("Marcus", result[2].Nickname);
+                Assert.Equal("Baird", result[3].Nickname);
+                Assert.Equal(0, result[3].Weapons.Count);
+                Assert.Equal("Marcus", result[4].Nickname);
             }
         }
 
@@ -1585,8 +1593,14 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
                             select g2 ?? g1;
 
                 var result = query.ToList();
-
-                Assert.True(result.All(r => r.Weapons.Count > 0));
+                
+                Assert.Equal("Marcus", result[0].Nickname);
+                Assert.Equal(2, result[0].Weapons.Count);
+                Assert.Equal("Baird", result[1].Nickname);
+                Assert.Equal(2, result[1].Weapons.Count);
+                Assert.Equal("Marcus", result[2].Nickname);
+                Assert.Equal("Marcus", result[3].Nickname);
+                Assert.Equal("Marcus", result[4].Nickname);
             }
         }
 
@@ -1603,7 +1617,13 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
 
                 var result = query.ToList();
 
-                Assert.True(result.All(r => r.Weapons.Count > 0));
+                Assert.Equal("Marcus", result[0].Nickname);
+                Assert.Equal(2, result[0].Weapons.Count);
+                Assert.Equal("Marcus", result[1].Nickname);
+                Assert.Equal("Marcus", result[2].Nickname);
+                Assert.Equal("Baird", result[3].Nickname);
+                Assert.Equal(2, result[3].Weapons.Count);
+                Assert.Equal("Marcus", result[4].Nickname);
             }
         }
 
@@ -1633,11 +1653,18 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
                             join g2 in context.Gears.Include(g => g.Weapons)
                             on g1.LeaderNickname equals g2.Nickname into grouping
                             from g2 in grouping.DefaultIfEmpty()
+                            // ReSharper disable once MergeConditionalExpression
                             select g2 != null ? g2 : g1;
 
                 var result = query.ToList();
 
-                Assert.True(result.All(r => r.Weapons.Count > 0));
+                Assert.Equal("Marcus", result[0].Nickname);
+                Assert.Equal(2, result[0].Weapons.Count);
+                Assert.Equal("Marcus", result[1].Nickname);
+                Assert.Equal("Marcus", result[2].Nickname);
+                Assert.Equal("Baird", result[3].Nickname);
+                Assert.Equal(2, result[3].Weapons.Count);
+                Assert.Equal("Marcus", result[4].Nickname);
             }
         }
 
@@ -2127,7 +2154,7 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
         }
 
         [ConditionalFact]
-        public virtual void Distinct_with_optional_navigation_is_evaluated_on_client()
+        public virtual void Distinct_with_optional_navigation_is_translated_to_sql()
         {
             using (var context = CreateContext())
             {
@@ -2141,7 +2168,7 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
         }
 
         [ConditionalFact]
-        public virtual void Sum_with_optional_navigation_is_evaluated_on_client()
+        public virtual void Sum_with_optional_navigation_is_translated_to_sql()
         {
             using (var context = CreateContext())
             {
@@ -2166,6 +2193,38 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
                 var query = (from g in context.Gears
                              where g.Tag.Note != "Foo"
                              select g.HasSoulPatch).Count();
+
+                Assert.Equal(5, query);
+            }
+        }
+
+        [ConditionalFact]
+        public virtual void Distinct_with_unflattened_groupjoin_is_evaluated_on_client()
+        {
+            using (var context = CreateContext())
+            {
+                var query = context.Gears.GroupJoin(
+                    context.Tags,
+                    g => new { k1 = g.Nickname, k2 = (int?)g.SquadId },
+                    t => new { k1 = t.GearNickName, k2 = t.GearSquadId },
+                    (g, t) => g.HasSoulPatch).Distinct();
+
+                var result = query.ToList();
+
+                Assert.Equal(2, result.Count);
+            }
+        }
+
+        [ConditionalFact]
+        public virtual void Count_with_unflattened_groupjoin_is_evaluated_on_client()
+        {
+            using (var context = CreateContext())
+            {
+                var query = context.Gears.GroupJoin(
+                    context.Tags,
+                    g => new { k1 = g.Nickname, k2 = (int?)g.SquadId },
+                    t => new { k1 = t.GearNickName, k2 = t.GearSquadId },
+                    (g, t) => g).Count();
 
                 Assert.Equal(5, query);
             }
@@ -2249,6 +2308,25 @@ namespace Microsoft.EntityFrameworkCore.Specification.Tests
 
         private static bool ClientEquals(string first, string second)
             => first == second;
+
+        [ConditionalFact]
+        public virtual void Contains_with_local_nullable_guid_list_closure()
+        {
+            using (var context = CreateContext())
+            {
+                var ids = new List<Guid?>
+                {
+                    Guid.Parse("D2C26679-562B-44D1-AB96-23D1775E0926"),
+                    Guid.Parse("23CBCF9B-CE14-45CF-AAFA-2C2667EBFDD3"),
+                    Guid.Parse("AB1B82D7-88DB-42BD-A132-7EEF9AA68AF4")
+                };
+
+                var query = context.Tags.Where(e => ids.Contains(e.Id)).ToList();
+
+                // Guids generated are random on each iteration.
+                Assert.Equal(0, query.Count);
+            }
+        }
 
         protected GearsOfWarContext CreateContext() => Fixture.CreateContext(TestStore);
 

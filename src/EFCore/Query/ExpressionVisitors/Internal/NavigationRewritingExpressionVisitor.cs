@@ -9,6 +9,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore.Extensions.Internal;
+using Microsoft.EntityFrameworkCore.Internal;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Query.Expressions.Internal;
@@ -269,10 +270,7 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors.Internal
             {
                 if (leftNavigationJoin != null)
                 {
-                    var constantExpression = newRight as ConstantExpression;
-
-                    if (constantExpression != null
-                        && constantExpression.Value == null)
+                    if (newRight.IsNullConstantExpression())
                     {
                         if (leftNavigationJoin.DependentToPrincipal)
                         {
@@ -295,10 +293,7 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors.Internal
 
                 if (rightNavigationJoin != null)
                 {
-                    var constantExpression = newLeft as ConstantExpression;
-
-                    if (constantExpression != null
-                        && constantExpression.Value == null)
+                    if (newLeft.IsNullConstantExpression())
                     {
                         if (rightNavigationJoin.DependentToPrincipal)
                         {
@@ -1204,26 +1199,9 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors.Internal
                 target,
                 Expression.Constant(property.Name));
 
-            if (!addNullCheck)
-            {
-                return propertyExpression;
-            }
-
-            var constantNull = property.ClrType.IsNullableType()
-                ? Expression.Constant(null, property.ClrType)
-                : Expression.Constant(null, property.ClrType.MakeNullable());
-
-            if (!property.ClrType.IsNullableType())
-            {
-                propertyExpression = Expression.Convert(propertyExpression, propertyExpression.Type.MakeNullable());
-            }
-
-            return Expression.Condition(
-                Expression.NotEqual(
-                    target,
-                    Expression.Constant(null, target.Type)),
-                propertyExpression,
-                constantNull);
+            return addNullCheck
+                ? new NullConditionalExpression(target, target, propertyExpression)
+                : propertyExpression;
         }
 
         private static bool IsCompositeKey([NotNull] Type type)
@@ -1443,9 +1421,6 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors.Internal
                 {
                     _queryModelVisitor = queryModelVisitor;
                 }
-
-                protected override Expression VisitSubQuery(SubQueryExpression expression)
-                    => expression;
 
                 protected override Expression VisitMember(MemberExpression node)
                 {

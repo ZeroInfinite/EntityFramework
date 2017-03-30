@@ -1,10 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <Import Project="..\..\build\common.props" />
   <PropertyGroup>
-    <TargetFrameworks>net452;netcoreapp1.1</TargetFrameworks>
+    <TargetFrameworks>net46;netcoreapp1.1</TargetFrameworks>
     <TargetFrameworks Condition="'$(OS)' != 'Windows_NT'">netcoreapp1.1</TargetFrameworks>
     <AssemblyName>Microsoft.EntityFrameworkCore.Sqlite.Design.Tests</AssemblyName>
     <RootNamespace>Microsoft.EntityFrameworkCore</RootNamespace>
+    <!-- TODO: Remove when Microsoft/vstest#428 is fixed. -->
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\EFCore.Relational.Design.Tests\EFCore.Relational.Design.Tests.csproj" />
@@ -12,8 +15,11 @@
     <ProjectReference Include="..\EFCore.Sqlite.Tests\EFCore.Sqlite.Tests.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="15.0.0" />
-    <PackageReference Include="xunit" Version="2.2.0" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.2.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="$(TestSdkVersion)" />
+    <PackageReference Include="xunit" Version="$(XunitVersion)" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="$(XunitVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <Service Include="{82a7f48d-3b50-4b1e-b82e-3ada8210c358}" />
   </ItemGroup>
 </Project>

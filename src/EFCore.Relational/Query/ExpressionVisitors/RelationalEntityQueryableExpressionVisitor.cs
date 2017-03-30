@@ -17,6 +17,7 @@ using Microsoft.EntityFrameworkCore.Query.ResultOperators.Internal;
 using Microsoft.EntityFrameworkCore.Query.Sql;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Utilities;
+using Remotion.Linq;
 using Remotion.Linq.Clauses;
 using Remotion.Linq.Clauses.Expressions;
 
@@ -71,7 +72,12 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
 
             var queryModelVisitor = (RelationalQueryModelVisitor)CreateQueryModelVisitor();
 
+            var queryModelMapping = new Dictionary<QueryModel, QueryModel>();
+            expression.QueryModel.PopulateQueryModelMapping(queryModelMapping);
+
             queryModelVisitor.VisitQueryModel(expression.QueryModel);
+
+            expression.QueryModel.RecreateQueryModelFromMapping(queryModelMapping);
 
             if (_querySource != null)
             {
@@ -97,7 +103,6 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
                     node,
                     (property, querySource, selectExpression)
                         => selectExpression.AddToProjection(
-                            _relationalAnnotationProvider.For(property).ColumnName,
                             property,
                             querySource),
                     bindSubQueries: true);
@@ -121,7 +126,6 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
                     node,
                     (property, querySource, selectExpression)
                         => selectExpression.AddToProjection(
-                            _relationalAnnotationProvider.For(property).ColumnName,
                             property,
                             querySource),
                     bindSubQueries: true);
@@ -238,8 +242,6 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
                     .QuerySourceRequiresMaterialization(_querySource)
                 || QueryModelVisitor.RequiresClientEval)
             {
-                Dictionary<Type, int[]> typeIndexMap;
-
                 var materializer
                     = _materializerFactory
                         .CreateMaterializer(
@@ -247,11 +249,10 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
                             selectExpression,
                             (p, se) =>
                                 se.AddToProjection(
-                                    _relationalAnnotationProvider.For(p).ColumnName,
                                     p,
                                     _querySource),
                             _querySource,
-                            out typeIndexMap).Compile();
+                            out var typeIndexMap).Compile();
 
                 shaper
                     = (Shaper)_createEntityShaperMethodInfo.MakeGenericMethod(elementType)
@@ -293,10 +294,9 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
                     .For(concreteEntityTypes[0]).DiscriminatorProperty;
 
             var discriminatorColumn
-                = new ColumnExpression(
-                    _relationalAnnotationProvider.For(discriminatorProperty).ColumnName,
+                = selectExpression.BindPropertyToSelectExpression(
                     discriminatorProperty,
-                    selectExpression.GetTableForQuerySource(querySource));
+                    querySource);
 
             var firstDiscriminatorValue
                 = Expression.Constant(

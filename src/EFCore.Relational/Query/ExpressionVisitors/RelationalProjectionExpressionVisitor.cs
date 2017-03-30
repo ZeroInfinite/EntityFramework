@@ -1,12 +1,12 @@
 // Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
-using System.Linq;
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using JetBrains.Annotations;
-using Microsoft.EntityFrameworkCore.Internal;
 using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Microsoft.EntityFrameworkCore.Query.Expressions;
+using Microsoft.EntityFrameworkCore.Query.Internal;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Utilities;
 using Remotion.Linq.Clauses;
@@ -23,6 +23,8 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
         private readonly ISqlTranslatingExpressionVisitorFactory _sqlTranslatingExpressionVisitorFactory;
         private readonly IEntityMaterializerSource _entityMaterializerSource;
         private readonly IQuerySource _querySource;
+
+        private readonly Dictionary<Expression, Expression> _sourceExpressionProjectionMapping = new Dictionary<Expression, Expression>();
 
         /// <summary>
         ///     Creates a new instance of <see cref="RelationalProjectionExpressionVisitor" />.
@@ -57,6 +59,11 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
             Check.NotNull(node, nameof(node));
+
+            if (IncludeCompiler.IsIncludeMethod(node))
+            {
+                return node;
+            }
 
             if (EntityQueryModelVisitor.IsPropertyMethod(node.Method))
             {
@@ -95,16 +102,19 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
             {
                 for (var i = 0; i < expression.Arguments.Count; i++)
                 {
-                    var aliasExpression
-                        = selectExpression.Projection
-                            .OfType<AliasExpression>()
-                            .SingleOrDefault(ae => ae.SourceExpression == expression.Arguments[i]);
+                    var sourceExpression = expression.Arguments[i];
 
-                    if (aliasExpression != null)
+                    if (_sourceExpressionProjectionMapping.ContainsKey(sourceExpression))
                     {
-                        aliasExpression.SourceMember
-                            = expression.Members?[i]
-                              ?? (expression.Arguments[i] as MemberExpression)?.Member;
+                        var memberInfo = expression.Members?[i]
+                            ?? (expression.Arguments[i] as MemberExpression)?.Member;
+
+                        if (memberInfo != null)
+                        {
+                            selectExpression.SetProjectionForMemberInfo(
+                                memberInfo,
+                                _sourceExpressionProjectionMapping[sourceExpression]);
+                        }
                     }
                 }
             }
@@ -156,24 +166,18 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
 
                     if (!(node is NewExpression))
                     {
-                        AliasExpression aliasExpression;
-
-                        int index;
-
                         if (!(node is QuerySourceReferenceExpression))
                         {
-                            var columnExpression = sqlExpression.TryGetColumnExpression();
-
-                            if (columnExpression != null)
+                            if (sqlExpression is NullableExpression nullableExpression)
                             {
-                                index = selectExpression.AddToProjection(sqlExpression);
+                                sqlExpression = nullableExpression.Operand;
+                            }
 
-                                aliasExpression = selectExpression.Projection[index] as AliasExpression;
+                            if (sqlExpression is ColumnExpression)
+                            {
+                                selectExpression.AddToProjection(sqlExpression);
 
-                                if (aliasExpression != null)
-                                {
-                                    aliasExpression.SourceExpression = node;
-                                }
+                                _sourceExpressionProjectionMapping[node] = sqlExpression;
 
                                 return node;
                             }
@@ -187,14 +191,9 @@ namespace Microsoft.EntityFrameworkCore.Query.ExpressionVisitors
 
                             if (targetExpression.Type == typeof(ValueBuffer))
                             {
-                                index = selectExpression.AddToProjection(sqlExpression);
+                                var index = selectExpression.AddToProjection(sqlExpression);
 
-                                aliasExpression = selectExpression.Projection[index] as AliasExpression;
-
-                                if (aliasExpression != null)
-                                {
-                                    aliasExpression.SourceExpression = node;
-                                }
+                                _sourceExpressionProjectionMapping[node] = sqlExpression;
 
                                 var readValueExpression
                                     = _entityMaterializerSource

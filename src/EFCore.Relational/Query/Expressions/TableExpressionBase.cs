@@ -6,6 +6,7 @@ using System.Linq.Expressions;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore.Utilities;
 using Remotion.Linq.Clauses;
+using Microsoft.EntityFrameworkCore.Query.Internal;
 
 namespace Microsoft.EntityFrameworkCore.Query.Expressions
 {
@@ -88,7 +89,16 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         {
             Check.NotNull(querySource, nameof(querySource));
 
-            return _querySource == querySource;
+            return _querySource == PreProcessQuerySource(querySource);
+        }
+
+        protected virtual IQuerySource PreProcessQuerySource([NotNull] IQuerySource querySource)
+        {
+            Check.NotNull(querySource, nameof(querySource));
+
+            var newQuerySource = (querySource as AdditionalFromClause)?.TryGetFlattenedGroupJoinClause() ?? querySource;
+
+            return (newQuerySource as GroupJoinClause)?.JoinClause ?? newQuerySource;
         }
 
         /// <summary>

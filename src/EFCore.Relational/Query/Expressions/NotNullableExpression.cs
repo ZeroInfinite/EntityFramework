@@ -4,6 +4,7 @@
 using System;
 using System.Linq.Expressions;
 using JetBrains.Annotations;
+using Microsoft.EntityFrameworkCore.Utilities;
 
 namespace Microsoft.EntityFrameworkCore.Query.Expressions
 {
@@ -20,7 +21,10 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         /// <param name="operand"> The operand. </param>
         public NotNullableExpression([NotNull] Expression operand)
         {
+            Check.NotNull(operand, nameof(operand));
+
             _operand = operand;
+            Type = _operand.Type.UnwrapNullableType();
         }
 
         /// <summary>
@@ -36,7 +40,7 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         /// <summary>
         ///     The type.
         /// </summary>
-        public override Type Type => typeof(bool);
+        public override Type Type { get; }
 
         /// <summary>
         ///     Reduces the node and then calls the visitor delegate on the reduced expression. The method throws an exception if the node is not
@@ -66,5 +70,37 @@ namespace Microsoft.EntityFrameworkCore.Query.Expressions
         /// </summary>
         /// <returns>The reduced expression.</returns>
         public override Expression Reduce() => _operand;
+
+        /// <summary>
+        ///     Tests if this object is considered equal to another.
+        /// </summary>
+        /// <param name="obj"> The object to compare with the current object. </param>
+        /// <returns>
+        ///     true if the objects are considered equal, false if they are not.
+        /// </returns>
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj))
+            {
+                return false;
+            }
+
+            if (ReferenceEquals(this, obj))
+            {
+                return true;
+            }
+
+            return obj.GetType() == GetType() && Equals((NotNullableExpression)obj);
+        }
+
+        private bool Equals([NotNull] NotNullableExpression other) => Equals(_operand, other._operand);
+
+        /// <summary>
+        ///     Returns a hash code for this object.
+        /// </summary>
+        /// <returns>
+        ///     A hash code for this object.
+        /// </returns>
+        public override int GetHashCode() => _operand.GetHashCode();
     }
 }

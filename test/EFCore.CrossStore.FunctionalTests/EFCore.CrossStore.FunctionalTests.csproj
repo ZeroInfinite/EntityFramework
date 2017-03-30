@@ -1,10 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <Import Project="..\..\build\common.props" />
   <PropertyGroup>
-    <TargetFrameworks>net452;netcoreapp1.1</TargetFrameworks>
+    <TargetFrameworks>net46;netcoreapp1.1</TargetFrameworks>
     <TargetFrameworks Condition="'$(OS)' != 'Windows_NT'">netcoreapp1.1</TargetFrameworks>
     <AssemblyName>Microsoft.EntityFrameworkCore.CrossStore.FunctionalTests</AssemblyName>
     <RootNamespace>Microsoft.EntityFrameworkCore.CrossStore.FunctionalTests</RootNamespace>
+    <!-- TODO: Remove when Microsoft/vstest#428 is fixed. -->
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="..\EFCore.SqlServer.FunctionalTests\Northwind.sql">
@@ -18,8 +21,8 @@
     <ProjectReference Include="..\EFCore.SqlServer.FunctionalTests\EFCore.SqlServer.FunctionalTests.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="15.0.0" />
-    <PackageReference Include="xunit" Version="2.2.0" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.2.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="$(TestSdkVersion)" />
+    <PackageReference Include="xunit" Version="$(XunitVersion)" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="$(XunitVersion)" />
   </ItemGroup>
 </Project>
